@@ -15,6 +15,6 @@ ENV VERA_DB_PATH=/app/data/vera_state.db
 EXPOSE 8000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD curl -f http://localhost:8000/v1/healthz || exit 1
+    CMD curl -f http://localhost:7860/v1/healthz || exit 1
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--log-level", "info", "--workers", "1"]
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "7860", "--log-level", "info", "--workers", "1"]
