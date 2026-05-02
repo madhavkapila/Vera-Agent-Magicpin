@@ -43,7 +43,8 @@ START_TIME = time.time()
 async def lifespan(app: FastAPI):
     logger.info("Vera Message Engine starting...")
     database.get_db()
-    logger.info("Database ready ✓")
+    database.wipe_all()
+    logger.info("Database ready and wiped ✓")
     yield
     database.close_db()
     logger.info("Shutdown complete ✓")
@@ -59,7 +60,7 @@ class ContextBody(BaseModel):
     scope: str
     context_id: str
     version: int
-    payload: Dict[str, Any] = {}
+    payload: Any = Field(default_factory=dict)
     delivered_at: Optional[str] = None
 
 class TickBody(BaseModel):

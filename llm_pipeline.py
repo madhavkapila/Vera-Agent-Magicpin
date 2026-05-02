@@ -14,8 +14,8 @@ CEREBRAS_API_KEY = os.getenv("CEREBRAS_API_KEY", "")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 CEREBRAS_URL = "https://api.cerebras.ai/v1/chat/completions"
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
-DIAG_MODEL = "llama3.1-8b"
-COPY_MODEL = "llama-3.3-70b-versatile"
+DIAG_MODEL = os.getenv("DIAG_MODEL", "llama3.1-8b")
+COPY_MODEL = os.getenv("COPY_MODEL", "llama-3.3-70b-versatile")
 
 # ─── Category Voice Templates (Pillar 5) ─────────────────────────────────────
 
@@ -314,13 +314,19 @@ def compose_reply(
     if not signal:
         signal = _heuristic_signal(merchant, trigger, customer)
 
-    # Step 2: Copywriter (reply mode)
-    voice = _get_voice(cat_slug, category)
-    user_prompt = _build_copy_prompt(signal, bundle, is_reply=True, reply_msg=message, conv_history=conv_str)
-    result = _run_copywriter(voice, user_prompt)
-
-    if not result:
-        result = _fallback_reply(message, merchant, signal)
+    # Check deterministic heuristics first to bypass LLM for strict rules
+    heuristic_result = _fallback_reply(message, merchant, signal, conversation_history)
+    
+    if heuristic_result.get("action") in ["end"] or heuristic_result.get("wait_seconds") == 14400 or heuristic_result.get("cta") == "binary_confirm_cancel":
+        result = heuristic_result
+    else:
+        # Step 2: Copywriter (reply mode)
+        voice = _get_voice(cat_slug, category)
+        user_prompt = _build_copy_prompt(signal, bundle, is_reply=True, reply_msg=message, conv_history=conv_str)
+        result = _run_copywriter(voice, user_prompt)
+    
+        if not result:
+            result = heuristic_result
 
     # Ensure required fields
     result.setdefault("action", "send")
@@ -427,17 +433,23 @@ def _fallback_tick_message(signal: Dict, merchant: Dict, trigger: Dict, customer
             "template_name": f"vera_{kind}_v1", "template_params": [greeting]}
 
 
-def _fallback_reply(message: str, merchant: Dict, signal: Dict) -> Dict:
+def _fallback_reply(message: str, merchant: Dict, signal: Dict, conversation_history: List[Dict] = None) -> Dict:
     """Deterministic fallback for reply composition."""
     msg_lower = message.lower().strip()
     
     # Auto-reply detection
-    auto_phrases = ["thank you for contacting", "our team will respond", "we will get back",
-                    "auto-reply", "out of office", "away message"]
+    auto_phrases = ["thank you for contacting", "our team will respond", "we will get back", "auto-reply", "out of office", "away message"]
     if any(p in msg_lower for p in auto_phrases):
-        return {"action": "wait", "wait_seconds": 14400,
-                "body": "", "cta": "none",
-                "rationale": "Detected auto-reply. Backing off 4 hours."}
+        auto_count = 1
+        if conversation_history:
+            for turn in reversed(conversation_history):
+                if turn.get("role") == "merchant" and any(p in turn.get("message", "").lower() for p in auto_phrases):
+                    auto_count += 1
+                elif turn.get("role") == "merchant":
+                    break
+        if auto_count >= 4:
+            return {"action": "end", "rationale": "Auto-reply limit reached (4 times). Ending conversation gracefully."}
+        return {"action": "wait", "wait_seconds": 14400, "body": "", "cta": "none", "rationale": f"Detected auto-reply (count: {auto_count}). Backing off 4 hours."}
     
     # Hostile detection
     hostile_phrases = ["stop messaging", "not interested", "useless", "spam", "stop sending",
@@ -448,7 +460,7 @@ def _fallback_reply(message: str, merchant: Dict, signal: Dict) -> Dict:
     
     # Commitment detection → switch to action
     commit_phrases = ["ok let's do it", "let's do it", "yes do it", "go ahead", "proceed",
-                      "sounds good let's", "ok go ahead", "yes please", "confirm", "let's go"]
+                      "sounds good let's", "ok go ahead", "yes please", "confirm", "let's go", "whats next", "what's next"]
     if any(p in msg_lower for p in commit_phrases):
         ident = merchant.get("identity", {})
         name = ident.get("owner_first_name", ident.get("name", ""))

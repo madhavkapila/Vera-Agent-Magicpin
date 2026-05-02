@@ -28,6 +28,8 @@ ENV/
 # Database
 *.db
 *.sqlite3
+*.db-shm
+*.db-wal
 
 # OS
 .DS_Store

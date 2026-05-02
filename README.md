@@ -11,27 +11,60 @@ pinned: false
 
 **Stateful, deterministic message engine for merchant engagement — magicpin AI Challenge 2026**
 
-## Architecture
+## 🏗 Architecture Overview
 
+The Vera Message Engine is designed for high-throughput, idempotent execution, serving as the connective tissue between the magicpin backend and the LLM pipeline. It ensures absolute data determinism while offloading cognitive processing to a specialized multi-model stack.
+
+```mermaid
+graph TD
+    subgraph "API Layer (FastAPI)"
+        A[magicpin Judge] -->|POST /v1/context| B(Context Endpoint)
+        A -->|POST /v1/tick| C(Tick Endpoint)
+        A -->|POST /v1/reply| D(Reply Endpoint)
+    end
+
+    subgraph "State Manager"
+        B --> E[(SQLite WAL Mode)]
+        C --> E
+        D --> E
+    end
+
+    subgraph "Security Shield"
+        D --> F{Prompt Guard}
+        F -->|Injection Detected| G[Block & Log]
+        F -->|Safe| H[Heuristics Engine]
+    end
+
+    subgraph "Tri-Model Pipeline"
+        C --> H
+        H -->|Hard Intents| I[Short-Circuit Action]
+        H -->|Pass| J[Cerebras: Diagnostician]
+        J --> K[Groq: Copywriter]
+    end
+
+    K --> L[Action Response]
+    I --> L
+    L --> A
 ```
-Request → Payload Limiter → Security Shield (Prompt Guard) → State Manager (SQLite) → Tri-Model Pipeline → Response
-```
 
-### Tri-Model Pipeline
+### 🧠 The Tri-Model Pipeline
+To balance reasoning capability with strict latency constraints, cognitive load is explicitly split across three layers:
 
-| Step | Provider | Model | Role |
-|------|----------|-------|------|
-| 1. Diagnostician | Cerebras | llama3.1-8b | Extracts the ONE critical signal from merchant state |
-| 2. Copywriter | Groq | llama-3.3-70b-versatile | Crafts high-compulsion message with specific CTA |
-| Shield | Groq | llama-prompt-guard-2-86m | Blocks prompt injections before DB/LLM access |
+1. **The Heuristic Engine (Deterministic First Layer):** Before any LLM is queried, the engine checks for hard rules (e.g., auto-replies, hostile intents, explicit commitments). This prevents hallucinated reasoning on structural workflow states and saves tokens.
+2. **The Diagnostician (Cerebras Llama-3.1-8b):** Fast, low-latency extraction. Given the massive 4-context bundle (Category, Merchant, Trigger, Customer), Cerebras rapidly diagnoses the *single* highest-leverage signal.
+3. **The Copywriter (Groq Llama-3.3-70b-versatile):** The heavy-lifter. Armed with the targeted signal from Cerebras and strict voice constraints based on Category, Groq drafts highly compelling, grounded copy with zero hallucination.
 
-### Category Routing (Pillar 5)
+### 💾 The State Manager: Embedded SQLite
+To achieve zero-latency context resolution while strictly adhering to the judge harness contract, the engine uses **SQLite3 in WAL (Write-Ahead Logging) mode**. 
 
-Dynamic system prompts tuned to merchant vertical:
-- **Dentists/Pharmacies**: Clinical, utility-first, compliance-aware
-- **Salons**: Visual, timely, aesthetic-focused
-- **Restaurants**: Urgent, occasion-driven, locally grounded
-- **Gyms**: Motivational, seasonal-dip reframing
+* **Version-Gated Idempotency:** The `contexts` table uses a composite Primary Key of `(scope, context_id)`. During a `/v1/context` push, the engine validates the incoming `version` and gracefully rejects stale data with a `409 Conflict`, safely swallowing duplicate webhooks.
+* **Synchronous Concurrency:** By using single-worker synchronous SQLite, we eliminate race conditions in state updates without needing heavy external dependencies.
+
+### 🛡️ The Security Shield
+Merchant inputs via `/v1/reply` are fundamentally untrusted. Before the LLM pipeline sees the input, it passes through the **Prompt Guard Middleware**.
+
+* If an injection attempt is detected, the request is immediately short-circuited.
+* The system logs the attempt with a `[BLOCKED]` flag in the conversation history and returns a graceful fallback response, ensuring the bot's internal persona and data exposure limits remain uncompromised.
 
 ## Setup
 

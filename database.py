@@ -31,6 +31,9 @@ def get_db() -> sqlite3.Connection:
         _conn.execute("PRAGMA synchronous=NORMAL")
         _conn.execute("PRAGMA busy_timeout=5000")
         _init_schema(_conn)
+        _conn.execute("DELETE FROM contexts")
+        _conn.execute("DELETE FROM conversations")
+        _conn.commit()
         logger.info("Database initialized at %s", DB_PATH)
     return _conn
 
