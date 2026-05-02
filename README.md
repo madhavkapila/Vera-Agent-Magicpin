@@ -1,3 +1,12 @@
+---
+title: Magicpin Vera Bot
+emoji: 📊
+colorFrom: purple
+colorTo: blue
+sdk: docker
+pinned: false
+---
+
 # Vera Message Engine
 
 **Stateful, deterministic message engine for merchant engagement — magicpin AI Challenge 2026**
