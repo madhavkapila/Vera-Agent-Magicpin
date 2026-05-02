@@ -53,6 +53,24 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Vera Message Engine", version="1.0.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
+logger_traffic = logging.getLogger("vera.traffic")
+
+@app.middleware("http")
+async def log_traffic(request: Request, call_next):
+    start_time = time.time()
+    
+    # 1. Log the incoming hit
+    logger_traffic.info(f"[JUDGE IN] {request.method} {request.url.path}")
+    
+    # 2. Let the app process the request
+    response = await call_next(request)
+    
+    # 3. Log the result and speed
+    process_time = time.time() - start_time
+    logger_traffic.info(f"[JUDGE OUT] {request.method} {request.url.path} | Status: {response.status_code} | Time: {process_time:.3f}s")
+    
+    return response
+
 
 # ─── Pydantic Models (exact judge contract) ──────────────────────────────────
 
@@ -108,6 +126,7 @@ async def metadata():
 
 @app.post("/v1/context")
 async def push_context(body: ContextBody):
+    logger.info(f"[PAYLOAD] /v1/context triggered with: {body.model_dump_json()}")
     scope = body.scope.lower().strip()
     valid_scopes = {"category", "merchant", "customer", "trigger"}
     if scope not in valid_scopes:
@@ -132,6 +151,7 @@ async def push_context(body: ContextBody):
 
 @app.post("/v1/tick")
 async def tick(body: TickBody):
+    logger.info(f"[PAYLOAD] /v1/tick triggered with: {body.model_dump_json()}")
     actions = []
 
     for trig_id in body.available_triggers:
@@ -187,6 +207,7 @@ async def tick(body: TickBody):
 
 @app.post("/v1/reply")
 async def reply(body: ReplyBody):
+    logger.info(f"[PAYLOAD] /v1/reply triggered with: {body.model_dump_json()}")
     # Security Shield: check for prompt injection FIRST
     is_safe = check_prompt_injection(body.message)
     if not is_safe:
