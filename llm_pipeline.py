@@ -97,10 +97,13 @@ def _build_copy_prompt(signal: Dict, context_bundle: str, is_reply: bool = False
         parts.append("If off-topic (GST, unrelated) → politely decline and redirect to your signal.")
         if from_role == "customer":
             parts.append("IMPORTANT: You are replying to a CUSTOMER on behalf of the merchant. Use the customer's name, NOT the merchant owner's name. Confirm their request specifically.")
+        parts.append("LANGUAGE RULE: If the Merchant/Customer context specifies a language preference (e.g., 'hi-en mix', 'Hindi'), you MUST write the message in that specific language or Hinglish code-mix.")
+        parts.append("DATA RULE: Never apply aggregate merchant statistics to an individual customer. Only use customer-specific data for customers.")
     else:
         parts.append("Craft a proactive outreach message.")
         parts.append("CRITICAL: You MUST include a specific metric (e.g., footfall, views, churn rate) or an exact offer title from the data. Generic messages score 0.")
         parts.append("High compulsion. Keep it under 3 sentences. ONE clear CTA.")
+        parts.append("LANGUAGE RULE: If the Merchant context specifies a language preference (e.g., 'hi-en mix', 'Hindi'), you MUST write the message in that specific language or Hinglish code-mix.")
     
     parts.append(f"\nSignal: {json.dumps(signal)}")
     parts.append(f"\nFull context:\n{context_bundle[:6000]}")
