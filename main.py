@@ -246,6 +246,7 @@ async def reply(body: ReplyBody):
         result = compose_reply(
             merchant=merchant, category=category, message=body.message,
             conversation_history=conv_history, customer=customer,
+            from_role=body.from_role,
         )
     except Exception as e:
         logger.error("Reply compose error: %s", e, exc_info=True)

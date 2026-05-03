@@ -48,7 +48,7 @@ def _get_voice(category_slug: str, category_payload: Optional[Dict] = None) -> s
 DIAG_SYSTEM = """You are an expert business signal analyst. Given merchant context (category, merchant, trigger, customer), identify the SINGLE most critical signal for the next message.
 
 Output ONLY this JSON — no markdown, no explanation:
-{"signal": "<best_signal_type>", "signal_detail": "<why this signal matters now>", "best_offer": "<offer_id or title to pair, or null>", "key_fact": "<the ONE specific number/fact to anchor the message>", "merchant_name": "<name>", "owner_name": "<owner first name>"}"""
+{"signal": "<best_signal_type>", "signal_detail": "<why this signal matters now>", "best_offer": "<offer TITLE to pair (NEVER use ID), or null>", "key_fact": "<the ONE specific number/fact to anchor the message>", "merchant_name": "<name>", "owner_name": "<owner first name>"}"""
 
 
 def _run_diagnostician(context_bundle: str) -> Dict[str, Any]:
@@ -83,20 +83,24 @@ def _run_diagnostician(context_bundle: str) -> Dict[str, Any]:
 
 # ─── Step 2: Copywriter (Groq llama-3.3-70b-versatile) ───────────────────────
 
-def _build_copy_prompt(signal: Dict, context_bundle: str, is_reply: bool = False, reply_msg: str = "", conv_history: str = "") -> str:
+def _build_copy_prompt(signal: Dict, context_bundle: str, is_reply: bool = False, reply_msg: str = "", conv_history: str = "", from_role: str = "merchant") -> str:
     parts = []
     if is_reply:
-        parts.append(f'The merchant/customer said: "{reply_msg}"')
+        parts.append(f'The {from_role} replied: "{reply_msg}"')
         if conv_history:
             parts.append(f"Conversation so far:\n{conv_history}")
-        parts.append("Craft a contextual reply. Acknowledge their message. Stay grounded in the signal.")
+        parts.append("Craft a contextual reply. Acknowledge their message briefly, then pivot immediately to the signal.")
+        parts.append("CRITICAL: You MUST use exact numbers, offer titles, or metrics from the Full Context below in your response. Generic replies score 0.")
         parts.append("If they said 'not interested' or hostile → action should be 'end'.")
         parts.append("If it's an auto-reply (canned 'thank you for contacting') → action should be 'wait' with wait_seconds.")
-        parts.append("If they committed ('ok let's do it') → switch to ACTION mode, not more questions.")
+        parts.append("If they committed or confirmed → switch to ACTION mode with concrete next steps, not more questions.")
         parts.append("If off-topic (GST, unrelated) → politely decline and redirect to your signal.")
+        if from_role == "customer":
+            parts.append("IMPORTANT: You are replying to a CUSTOMER on behalf of the merchant. Use the customer's name, NOT the merchant owner's name. Confirm their request specifically.")
     else:
-        parts.append("Craft a proactive outreach message for this merchant.")
-        parts.append("High compulsion, specific benchmark from their data, real offer, ONE clear CTA.")
+        parts.append("Craft a proactive outreach message.")
+        parts.append("CRITICAL: You MUST include a specific metric (e.g., footfall, views, churn rate) or an exact offer title from the data. Generic messages score 0.")
+        parts.append("High compulsion. Keep it under 3 sentences. ONE clear CTA.")
     
     parts.append(f"\nSignal: {json.dumps(signal)}")
     parts.append(f"\nFull context:\n{context_bundle[:6000]}")
@@ -290,6 +294,7 @@ def compose_reply(
     merchant: Dict, category: Dict, message: str,
     conversation_history: List[Dict] = None,
     trigger: Optional[Dict] = None, customer: Optional[Dict] = None,
+    from_role: str = "merchant",
 ) -> Dict[str, Any]:
     """Full compose pipeline for a reply. Returns {action, body, cta, rationale}."""
     cat_slug = merchant.get("category_slug", category.get("slug", "general"))
@@ -315,14 +320,14 @@ def compose_reply(
         signal = _heuristic_signal(merchant, trigger, customer)
 
     # Check deterministic heuristics first to bypass LLM for strict rules
-    heuristic_result = _fallback_reply(message, merchant, signal, conversation_history)
+    heuristic_result = _fallback_reply(message, merchant, signal, conversation_history, customer, from_role)
     
-    if heuristic_result.get("action") in ["end"] or heuristic_result.get("wait_seconds") == 14400 or heuristic_result.get("cta") == "binary_confirm_cancel":
+    if heuristic_result.get("action") in ["end"] or heuristic_result.get("wait_seconds") == 14400:
         result = heuristic_result
     else:
         # Step 2: Copywriter (reply mode)
         voice = _get_voice(cat_slug, category)
-        user_prompt = _build_copy_prompt(signal, bundle, is_reply=True, reply_msg=message, conv_history=conv_str)
+        user_prompt = _build_copy_prompt(signal, bundle, is_reply=True, reply_msg=message, conv_history=conv_str, from_role=from_role)
         result = _run_copywriter(voice, user_prompt)
     
         if not result:
@@ -433,8 +438,8 @@ def _fallback_tick_message(signal: Dict, merchant: Dict, trigger: Dict, customer
             "template_name": f"vera_{kind}_v1", "template_params": [greeting]}
 
 
-def _fallback_reply(message: str, merchant: Dict, signal: Dict, conversation_history: List[Dict] = None) -> Dict:
-    """Deterministic fallback for reply composition."""
+def _fallback_reply(message: str, merchant: Dict, signal: Dict, conversation_history: List[Dict] = None, customer: Optional[Dict] = None, from_role: str = "merchant") -> Dict:
+    """Deterministic fallback for reply composition. Role-aware."""
     msg_lower = message.lower().strip()
     
     # Auto-reply detection
@@ -447,27 +452,67 @@ def _fallback_reply(message: str, merchant: Dict, signal: Dict, conversation_his
                     auto_count += 1
                 elif turn.get("role") == "merchant":
                     break
+        ident = merchant.get("identity", {})
+        m_name = ident.get("name", "your business")
+        o_name = ident.get("owner_first_name", "there")
+        
         if auto_count >= 4:
-            return {"action": "end", "rationale": "Auto-reply limit reached (4 times). Ending conversation gracefully."}
-        return {"action": "wait", "wait_seconds": 14400, "body": "", "cta": "none", "rationale": f"Detected auto-reply (count: {auto_count}). Backing off 4 hours."}
+            body = f"Since we haven't been able to connect, {o_name}, I'll close this thread for {m_name}. Reach out when you're ready!"
+            return {"action": "end", "body": body, "rationale": "Auto-reply limit reached."}
+        
+        body = f"Understood, {o_name}. Since {m_name} is currently unavailable, we will pause our performance outreach for now."
+        return {"action": "wait", "wait_seconds": 14400, "body": body, "cta": "none", "rationale": f"Detected auto-reply (count: {auto_count})."}
     
     # Hostile detection
     hostile_phrases = ["stop messaging", "not interested", "useless", "spam", "stop sending",
                        "don't message", "unsubscribe", "leave me alone"]
     if any(p in msg_lower for p in hostile_phrases):
-        return {"action": "end", "body": "",
-                "rationale": "Merchant explicitly opted out. Closing conversation gracefully."}
-    
-    # Commitment detection → switch to action
-    commit_phrases = ["ok let's do it", "let's do it", "yes do it", "go ahead", "proceed",
-                      "sounds good let's", "ok go ahead", "yes please", "confirm", "let's go", "whats next", "what's next"]
-    if any(p in msg_lower for p in commit_phrases):
         ident = merchant.get("identity", {})
-        name = ident.get("owner_first_name", ident.get("name", ""))
-        return {"action": "send",
-                "body": f"Great, {name}! Setting this up now. I'll have the draft ready in a moment. You'll be able to review before anything goes live.",
-                "cta": "binary_confirm_cancel",
-                "rationale": "Merchant committed — switching from qualifying to action mode."}
+        m_name = ident.get("name", "your business")
+        o_name = ident.get("owner_first_name", "there")
+        
+        body = f"Noted, {o_name}. We have updated the preferences for {m_name} and will halt all performance-driven messaging immediately."
+        return {"action": "end", "body": body, "rationale": "User explicitly opted out. Closing conversation gracefully."}
+    
+    # Commitment / booking detection → branch by who is speaking
+    commit_phrases = ["ok let's do it", "let's do it", "yes do it", "go ahead", "proceed",
+                      "sounds good let's", "ok go ahead", "yes please", "confirm", "let's go",
+                      "whats next", "what's next", "book me", "yes please book", "sign me up"]
+    if any(p in msg_lower for p in commit_phrases):
+        if from_role == "customer" or customer:
+            # CUSTOMER is confirming — use customer name, confirm their slot/action
+            c_name = "there"
+            if customer:
+                c_name = customer.get("identity", {}).get("name", "there")
+            
+            ident = merchant.get("identity", {})
+            m_name = ident.get("name", "our clinic")
+            
+            body = f"Perfect, {c_name}! Your slot at {m_name} is confirmed. "
+            best_off = signal.get("best_offer", "")
+            if best_off:
+                body += f"Don't forget you can use the '{best_off}' offer during your visit! "
+            body += "We look forward to serving you."
+            
+            return {"action": "send",
+                    "body": body,
+                    "cta": "none",
+                    "rationale": "Customer committed — confirming appointment/action."}
+        else:
+            # MERCHANT is committing — switch to action mode
+            ident = merchant.get("identity", {})
+            name = ident.get("owner_first_name", ident.get("name", ""))
+            
+            body = f"Great, {name}! Setting this up now. "
+            best_off = signal.get("best_offer", "")
+            if best_off:
+                body += f"We'll highlight your '{best_off}' offer to drive more engagement. "
+            body += "I'll have the draft ready in a moment. You'll be able to review before anything goes live."
+            
+            return {"action": "send",
+                    "body": body,
+                    "cta": "binary_confirm_cancel",
+                    "rationale": "Merchant committed — switching from qualifying to action mode."}
     
     # Off-topic detection
     offtopic = ["gst", "tax", "invoice", "salary", "loan", "insurance"]
@@ -477,11 +522,32 @@ def _fallback_reply(message: str, merchant: Dict, signal: Dict, conversation_his
                 "cta": "open_ended",
                 "rationale": "Off-topic ask declined politely; redirecting to growth signal."}
     
-    # Default engaged reply
-    return {"action": "send",
-            "body": "Got it — let me work on that. I'll have something ready for you shortly.",
-            "cta": "open_ended",
-            "rationale": "Acknowledged merchant reply; advancing conversation."}
+    # Default engaged reply — grounded in signal data, not generic
+    ident = merchant.get("identity", {})
+    perf = merchant.get("performance", {})
+    offers = merchant.get("offers", [])
+    active = [o for o in offers if o.get("status") == "active"]
+    key_fact = signal.get("key_fact", "")
+    best_offer = signal.get("best_offer", "")
+    
+    if from_role == "customer" and customer:
+        c_name = customer.get("identity", {}).get("name", "there")
+        body = f"Thanks for reaching out, {c_name}! "
+        if best_offer:
+            body += f"We have '{best_offer}' available for you. "
+        body += "Would you like to book a slot?"
+        return {"action": "send", "body": body, "cta": "binary_yes_no",
+                "rationale": f"Customer replied — offering specific action grounded in {signal.get('signal','context')}."}
+    else:
+        name = ident.get("owner_first_name", ident.get("name", ""))
+        body = f"Noted, {name}. "
+        if key_fact:
+            body += f"Looking at your numbers ({key_fact}), "
+        if best_offer:
+            body += f"I can pair this with your '{best_offer}' offer. "
+        body += "Want me to put together a specific plan?"
+        return {"action": "send", "body": body, "cta": "binary_yes_no",
+                "rationale": f"Acknowledged merchant reply; advancing with grounded data from {signal.get('signal','context')}."}
 
 
 def _parse_json(text: str) -> Optional[Dict]:

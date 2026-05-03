@@ -55,7 +55,7 @@ import json
 import time
 import re
 import socket
-from datetime import datetime
+from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any, Tuple
 from pathlib import Path
@@ -425,19 +425,19 @@ class BotClient:
     def push_context(self, scope, cid, version, payload):
         return self._request("POST", "/v1/context", 10, {
             "scope": scope, "context_id": cid, "version": version,
-            "payload": payload, "delivered_at": datetime.utcnow().isoformat() + "Z"
+            "payload": payload, "delivered_at": datetime.now(timezone.utc).isoformat() + "Z"
         })
 
     def tick(self, triggers):
         return self._request("POST", "/v1/tick", 15, {
-            "now": datetime.utcnow().isoformat() + "Z", "available_triggers": triggers
+            "now": datetime.now(timezone.utc).isoformat() + "Z", "available_triggers": triggers
         })
 
     def reply(self, conv_id, merchant_id, message, turn):
         return self._request("POST", "/v1/reply", 15, {
             "conversation_id": conv_id, "merchant_id": merchant_id, "customer_id": None,
             "from_role": "merchant", "message": message,
-            "received_at": datetime.utcnow().isoformat() + "Z", "turn_number": turn
+            "received_at": datetime.now(timezone.utc).isoformat() + "Z", "turn_number": turn
         })
 
 # =============================================================================
@@ -546,6 +546,9 @@ Score each dimension 0-10 with clear reasoning. Be STRICT."""
 
     def _parse_response(self, response: str, action: Dict) -> ScoreResult:
         """Parse LLM JSON response."""
+        # Strip out thinking blocks if present (for models like Qwen or DeepSeek-R1)
+        response = re.sub(r'<think>.*?</think>', '', response, flags=re.DOTALL)
+        
         match = re.search(r'\{[\s\S]*\}', response)
         if not match:
             return self._fallback_score(action)
